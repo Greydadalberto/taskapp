@@ -1,7 +1,7 @@
 // pages/login.tsx
 'use client';
 import { useState } from 'react';
-// import { Auth } from 'aws-amplify';
+import { Auth } from 'aws-amplify';
 import { useRouter } from 'next/navigation';
 
 export default function Login() {
