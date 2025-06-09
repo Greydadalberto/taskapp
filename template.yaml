@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Task Management System using AWS Serverless Services with Python Lambda Functions
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: S3 bucket containing Lambda zip files
+
+Resources:
+
+  # DynamoDB Table
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Tasks
+      AttributeDefinitions:
+        - AttributeName: taskId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: taskId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # Cognito User Pool
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: TaskUserPool
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: TaskAppClient
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admin
+      UserPoolId: !Ref UserPool
+
+  TeamGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: TeamMember
+      UserPoolId: !Ref UserPool
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TaskLambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TaskLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:* 
+                Resource: !GetAtt TasksTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  # Lambda: Create Task
+  CreateTaskFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CreateTaskFunction
+      Handler: create_task.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.11
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: create_task.zip
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+
+  # Lambda: Get Tasks
+  GetTasksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetTasksFunction
+      Handler: get_tasks.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.11
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: get_tasks.zip
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+
+  # Lambda: Update Task Status
+  UpdateTaskStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UpdateTaskStatusFunction
+      Handler: update_task_status.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.11
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: update_task_status.zip
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+
+  # API Gateway
+  TaskApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: TaskAPI
+
+  TaskApiRoot:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt TaskApi.RootResourceId
+      PathPart: tasks
+      RestApiId: !Ref TaskApi
+
+  CreateTaskMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref TaskApiRoot
+      RestApiId: !Ref TaskApi
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CreateTaskFunction.Arn}/invocations
+
+  GetTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref TaskApiRoot
+      RestApiId: !Ref TaskApi
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetTasksFunction.Arn}/invocations
+
+  UpdateTaskStatusMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: PUT
+      ResourceId: !Ref TaskApiRoot
+      RestApiId: !Ref TaskApi
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UpdateTaskStatusFunction.Arn}/invocations
+
+  # Permissions to allow API Gateway to invoke Lambdas
+  CreatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CreateTaskFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TaskApi}/*/POST/tasks
+
+  GetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetTasksFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TaskApi}/*/GET/tasks
+
+  UpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UpdateTaskStatusFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TaskApi}/*/PUT/tasks
+
+Outputs:
+  TasksTableName:
+    Description: DynamoDB table name
+    Value: !Ref TasksTable
+
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+
+  APIBaseURL:
+    Description: API Gateway Base URL
+    Value: !Sub https://${TaskApi}.execute-api.${AWS::Region}.amazonaws.com/prod
